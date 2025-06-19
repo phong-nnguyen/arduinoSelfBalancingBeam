@@ -41,12 +41,13 @@ float ypr[3];        // [yaw, pitch, roll]   yaw/pitch/roll container and gravit
 
 // PID Control
 double setPoint = 0;
-double input, output;
-double Kp = 2, Ki = 1, Kd = 1;
-PID myPID(&input, &output, &setPoint, Kp, Ki, Kd, DIRECT);
+double input = 0, output = 0;
+double Kp = 2.2, Ki = 1.3, Kd = 1;
+PID myPID(setPoint, Kp, Ki, Kd);
 
 // ESC Control
 Servo ESCNine, ESCTen;
+int baseThrottle = 1200;
 int rpm9 = 1000;
 int rpm10 = 1000;
 
@@ -72,8 +73,6 @@ void setup()
     Wire.setWireTimeout(3000, true);
 
     // initialize serial communication
-    // (115200 chosen because it is required for Teapot Demo output, but it's
-    // really up to you depending on your project)
     Serial.begin(115200);
     Serial.setTimeout(10);
     mpu.initialize();
@@ -87,10 +86,12 @@ void setup()
     mpu.dmpInitialize();
 
     // supply your own gyro offsets here, scaled for min sensitivity
-    mpu.setXGyroOffset(220);
-    mpu.setYGyroOffset(76);
-    mpu.setZGyroOffset(-85);
-    mpu.setZAccelOffset(1788); // 1688 factory default for my test chip
+    mpu.setXAccelOffset(-1398); // <-- YOUR X-ACCEL OFFSET
+    mpu.setYAccelOffset(1580);  // <-- YOUR Y-ACCEL OFFSET
+    mpu.setZAccelOffset(562);   // <-- YOUR Z-ACCEL OFFSET
+    mpu.setXGyroOffset(-1);     // <-- YOUR X-GYRO OFFSET
+    mpu.setYGyroOffset(5);      // <-- YOUR Y-GYRO OFFSET
+    mpu.setZGyroOffset(41);     // <-- YOUR Z-GYRO OFFSET
 
     // Calibration Time: generate offsets and calibrate our MPU6050
     mpu.CalibrateAccel(6);
@@ -106,7 +107,6 @@ void setup()
 
     // PID Control setup
     input = ypr[2] * 180 / M_PI;
-    myPID.SetMode(AUTOMATIC);
 
     ESCNine.attach(9, 1000, 2000);
     ESCTen.attach(10, 1000, 2000);
@@ -128,48 +128,56 @@ void loop()
     // read a packet from FIFO
     if (mpu.dmpGetCurrentFIFOPacket(fifoBuffer))
     { // Get the Latest packet
-        // display Euler angles in degrees
         mpu.dmpGetQuaternion(&q, fifoBuffer);
+        mpu.dmpGetAccel(&aa, fifoBuffer);
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-        input = ypr[2] * 180 / M_PI;
-        myPID.Compute();
-        Serial.print("ypr\t");
-        Serial.print(ypr[0] * 180 / M_PI);
+        //mpu.dmpGetLinearAccel(&aaReal, &aa, &gravity);
+        //mpu.dmpGetLinearAccelInWorld(&aaWorld, &aaReal, &q);
+
+        // Grab angle using gyrometer in degrees
+        double gyroAngle = ypr[2] * 180 / M_PI;
+
+        // Grab angle using accelerometer in degrees
+        float realAccX = (float)aa.x/16384;
+        float realAccY = (float)aa.y/16384;
+        float realAccZ = (float)aa.z/16384;
+        float accelerometerAngle = -atan(realAccX/sqrt(realAccY*realAccY + realAccZ*realAccZ)) * M_PI/180;
+
+
+        // Complementary filter on the angles
+        input = 0.96*gyroAngle + 0.04*(double)accelerometerAngle;
+        
+        if(!myPID.computeOutput(input, &output)){
+          myPID.prevTime_ = millis();
+          return;
+        }
+        Serial.print("Roll Gyro Angle\t");
+        // Serial.print(ypr[0] * 180 / M_PI);
+        // Serial.print("\t");
+        // Serial.print(ypr[1] * 180 / M_PI);
+        // Serial.print("\t");
+        Serial.print(gyroAngle);
         Serial.print("\t");
-        Serial.print(ypr[1] * 180 / M_PI);
+        Serial.print("Accelerometer: \t");
+        Serial.print(accelerometerAngle);
         Serial.print("\t");
-        Serial.println(ypr[2] * 180 / M_PI);
-        Serial.print("TEST: ");
-        Serial.print(output);
-        Serial.print("\t");
-        Serial.print("Input: ");
+        Serial.print("Input:");
         Serial.print(input);
-        Serial.print("\t");
+        Serial.println();
+        // Serial.print("TEST: ");
+        // Serial.print(output);
+        // Serial.print("\t");
+        // Serial.print("Input: ");
+        // Serial.print(input);
+        // Serial.print("\t");
     }
 
-    rpm9 += output;
-    rpm10 -= output;
+    rpm9 = baseThrottle + output;
+    rpm10 = baseThrottle - output;
 
-    if (rpm9 < 1250)
-    {
-        rpm9 = 1250;
-    }
-
-    if (rpm10 < 1250)
-    {
-        rpm10 = 1250;
-    }
-
-    if (rpm9 > 2000)
-    {
-        rpm9 = 2000;
-    }
-
-    if (rpm10 > 2000)
-    {
-        rpm10 = 2000;
-    }
+    rpm9 = constrain(rpm9, 1100, 1400);
+    rpm10 = constrain(rpm10, 1100, 1400);
 
     ESCNine.writeMicroseconds(rpm9);
     ESCTen.writeMicroseconds(rpm10);
